@@ -37,7 +37,7 @@ jobs:
           # --n_rep_cal: تعداد تکرارها برای کالیبراسیون h (معمولاً کمتر)
           # --n_rep_final: تعداد تکرارها برای محاسبه نهایی ARL (25000 از تنظیم قبلی شما)
           # --base_seed: تعیین Seed منحصر به فرد برای این Job
-          python improved_simulation_engine.py \
+          python simulation_engine.py \
             --n_seeds 1 \
             --n_rep_cal 20000 \
             --n_rep_final 25000 \
