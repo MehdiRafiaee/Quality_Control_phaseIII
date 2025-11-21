@@ -7,6 +7,7 @@ from joblib import Parallel, delayed, parallel_backend
 from sklearn.covariance import LedoitWolf
 from numba import njit, prange
 import sys
+import argparse  # اضافه کردن این خط برای رفع خطای argparse
 
 # تنظیمات برای بهینه‌سازی (Threading) در Numba و Joblib
 os.environ["OMP_NUM_THREADS"] = "1"
@@ -102,7 +103,7 @@ class Engine:
     def get_scenario(self, name: str, Sigma: np.ndarray):
         p = Sigma.shape[0]
         invS = np.linalg.inv(Sigma)
-        vals, vecs = np.linalg.eigh(Sigma)
+        vals, vecs = np.linalg.eigh(Sigma) 
         v_easy = vecs[:, -1]  
         v_hard = vecs[:, 0]    
 
