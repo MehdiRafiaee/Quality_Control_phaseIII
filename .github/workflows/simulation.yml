@@ -11,6 +11,7 @@ jobs:
     strategy:
       matrix:
         shard: [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19]
+
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
@@ -18,7 +19,7 @@ jobs:
       - name: Set up Python
         uses: actions/setup-python@v5
         with:
-          python-version: '3.12'
+          python-version: "3.12"
 
       - name: Install dependencies
         run: |
@@ -26,29 +27,30 @@ jobs:
 
       - name: Run Simulation Shard
         run: |
-          python simulation_engine.py \
-            --shard_id ${{ matrix.shard }} \
-            --n_rep 25000 \
-            --seed $((42 + ${{ matrix.shard }} * 100000)) \
-            --out results
+          python improved_simulation_engine.py \
+            --csv_path phase2_final_features.csv \
+            --out results \
+            --n_seeds 1 \
+            --n_rep_cal 60000 \
+            --n_rep_final 250000 \
+            --base_seed $((42514251 + ${{ matrix.shard }} * 100000)) \
+            --max_rl 5000000 \
+            --batch_size 10000 \
+            --calib_iters 25 \
+            --target_arl0 370
 
       - name: Upload Shard Results
         uses: actions/upload-artifact@v4
         with:
           name: shard-${{ matrix.shard }}
-          path: results/results_shard_${{ matrix.shard }}.csv
+          path: results/FINAL_SUMMARY_WITH_SE.csv
           retention-days: 1
 
-      - name: Upload Log (optional, for debug)
-        if: always()
-        uses: actions/upload-artifact@v4
-        with:
-          name: log-${{ matrix.shard }}
-          path: results/execution_log.txt
 
   aggregate:
     runs-on: ubuntu-latest
     needs: simulate
+
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
@@ -56,7 +58,7 @@ jobs:
       - name: Set up Python
         uses: actions/setup-python@v5
         with:
-          python-version: '3.12'
+          python-version: "3.12"
 
       - name: Install pandas
         run: pip install pandas
@@ -66,12 +68,12 @@ jobs:
         with:
           pattern: shard-*
           path: all_shards
-          merge-multiple: true   # این خط خیلی مهمه!
+          merge-multiple: true
 
       - name: Prepare aggregation directory
         run: |
           mkdir -p aggregated_results
-          find all_shards -name "results_shard_*.csv" -exec cp {} aggregated_results/ \;
+          find all_shards -name "FINAL_SUMMARY_WITH_SE.csv" -exec cp {} aggregated_results/ \;
           ls -la aggregated_results/
 
       - name: Run Merge Script
