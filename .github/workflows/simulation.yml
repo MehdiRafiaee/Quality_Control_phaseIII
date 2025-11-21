@@ -19,7 +19,7 @@ jobs:
       - name: Set up Python
         uses: actions/setup-python@v5
         with:
-          python-version: "3.12"
+          python-version: '3.12'
 
       - name: Install dependencies
         run: |
@@ -27,24 +27,25 @@ jobs:
 
       - name: Run Simulation Shard
         run: |
-          python improved_simulation_engine.py \
-            --csv_path phase2_final_features.csv \
-            --out results \
-            --n_seeds 1 \
-            --n_rep_cal 60000 \
-            --n_rep_final 250000 \
-            --base_seed $((42514251 + ${{ matrix.shard }} * 100000)) \
-            --max_rl 5000000 \
-            --batch_size 10000 \
-            --calib_iters 25 \
-            --target_arl0 370
+          python simulation_engine.py \
+            --shard_id ${{ matrix.shard }} \
+            --n_rep 25000 \
+            --seed $((42 + ${{ matrix.shard }} * 100000)) \
+            --out results
 
       - name: Upload Shard Results
         uses: actions/upload-artifact@v4
         with:
           name: shard-${{ matrix.shard }}
-          path: results/FINAL_SUMMARY_WITH_SE.csv
+          path: results/results_shard_${{ matrix.shard }}.csv
           retention-days: 1
+
+      - name: Upload Log (optional, for debug)
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: log-${{ matrix.shard }}
+          path: results/execution_log.txt
 
 
   aggregate:
@@ -58,7 +59,7 @@ jobs:
       - name: Set up Python
         uses: actions/setup-python@v5
         with:
-          python-version: "3.12"
+          python-version: '3.12'
 
       - name: Install pandas
         run: pip install pandas
@@ -73,12 +74,14 @@ jobs:
       - name: Prepare aggregation directory
         run: |
           mkdir -p aggregated_results
-          find all_shards -name "FINAL_SUMMARY_WITH_SE.csv" -exec cp {} aggregated_results/ \;
+          find all_shards -name "results_shard_*.csv" -exec cp {} aggregated_results/ \;
           ls -la aggregated_results/
 
       - name: Run Merge Script
         run: |
-          python merge_results.py --input_dir aggregated_results --output aggregated_results/final_report.csv
+          python merge_results.py \
+            --input_dir aggregated_results \
+            --output aggregated_results/final_report.csv
 
       - name: Upload Final Report
         uses: actions/upload-artifact@v4
