@@ -1,0 +1,78 @@
+name: Simulation Workflow
+
+on:
+  push:
+    branches: [ main ]
+  workflow_dispatch:
+
+jobs:
+  simulate:
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        shard: [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19]
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Install dependencies
+        run: |
+          pip install numpy pandas joblib scikit-learn numba
+
+      - name: Run Simulation Shard
+        run: |
+          python simulation_engine.py --shard_id ${{ matrix.shard }} --n_rep 25000 --seed $((42 + ${{ matrix.shard }} * 100000)) --out results
+
+      - name: Upload Shard Results
+        uses: actions/upload-artifact@v4
+        with:
+          name: shard-results-${{ matrix.shard }}
+          path: |
+            results/results_shard_${{ matrix.shard }}.csv
+            results/execution_log.txt
+          retention-days: 1
+
+  aggregate:
+    runs-on: ubuntu-latest
+    needs: simulate
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Install dependencies
+        run: |
+          pip install pandas
+
+      - name: Download All Shard Results
+        uses: actions/download-artifact@v4
+        with:
+          pattern: shard-results-*
+          path: downloaded-shards
+          merge-multiple: true
+
+      - name: Move Downloaded Files
+        run: |
+          mkdir -p aggregated_results
+          mv downloaded-shards/results/results_shard_*.csv aggregated_results/ || true
+          mv downloaded-shards/results/execution_log.txt aggregated_results/ || true  # Logs might overwrite, but that's fine for aggregation
+
+      - name: Run Merge Script
+        run: |
+          python merge_results.py --input_dir aggregated_results --output aggregated_results/final_report.csv
+
+      - name: Upload Final Report
+        uses: actions/upload-artifact@v4
+        with:
+          name: FINAL_REPORT
+          path: aggregated_results/final_report.csv
+          retention-days: 5
