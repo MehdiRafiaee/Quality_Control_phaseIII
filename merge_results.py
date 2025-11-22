@@ -8,7 +8,7 @@ import pandas as pd
 from pathlib import Path
 import sys
 
-def merge_shard_results(input_dir: str, output_path: str):
+def merge_shard_results(input_dir: str, output_path: str, lambda_value: float):
     input_path = Path(input_dir)
     if not input_path.exists():
         print(f"خطا: پوشه {input_dir} پیدا نشد!")
@@ -39,10 +39,12 @@ def merge_shard_results(input_dir: str, output_path: str):
     # تجمیع با گروه‌بندی بر اساس کلیدهای مشترک
     combined = pd.concat(all_dfs, ignore_index=True)
     
-    # میانگین‌گیری روی سناریوها برای هر ترکیب (Dataset, Lambda)
+    # اضافه کردن سناریو جدید که بر اساس lambda_value است
+    scenario_cols = ["IC", "small", "moderate", "large", "cond", "inlier", f"lambda_{lambda_value}"]
     key_cols = ["Dataset", "Lambda", "h"]
-    scenario_cols = ["IC", "small", "moderate", "large", "cond", "inlier"]
     
+    # محاسبه میانگین برای سناریوهای مختلف و ایجاد سناریوی جدید برای λ
+    combined[f"lambda_{lambda_value}"] = lambda_value  # Adding new scenario for lambda_value
     aggregated = combined.groupby(key_cols)[scenario_cols].mean().round(2).reset_index()
     
     # مرتب‌سازی قشنگ
@@ -63,6 +65,7 @@ if __name__ == "__main__":
                         help="پوشه‌ای که فایل‌های شارد در آن هستند")
     parser.add_argument("--output", type=str, default="aggregated_results/final_report.csv",
                         help="مسیر فایل خروجی نهایی")
+    parser.add_argument("--lambda_value", type=float, required=True, help="Lambda value for the new scenario")
     
     args = parser.parse_args()
-    merge_shard_results(args.input_dir, args.output)
+    merge_shard_results(args.input_dir, args.output, args.lambda_value)
