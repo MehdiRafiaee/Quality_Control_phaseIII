@@ -2,6 +2,7 @@
 """
 improved_simulation_engine_fixed.py
 نسخهٔ بهبود یافته با رفع خطای ابهام argparse (--n_rep_cal و --n_rep_final).
+اجرای تنها برای یک λ در هر بار اجرا.
 """
 import os
 # تنظیم متغیرهای محیطی برای کنترل موازی‌سازی توسط NumPy/MKL/OpenBLAS
@@ -111,33 +112,27 @@ class Engine:
         self.log = lambda *a, **k: print(*a, **k)
         self.n_seeds = args.n_seeds
         self.n_rep_cal = args.n_rep_cal
-        self.n_rep_final = args.n_rep_final
+        self.n_rep_final = args.n_rep_final  # Set to 1 million repetitions for final evaluation
         self.base_seed = int(args.base_seed)
         self.max_rl = int(args.max_rl)
-        # Set number of parallel jobs to 1 to rely solely on Numba's internal parallelism
-        self.n_jobs = 1 
+        self.n_jobs = 1  # Set to 1 as we are using Numba's internal parallelism
 
     def load_data(self):
         csv_path = Path(self.args.csv_path)
         if not csv_path.exists():
             self.log("CSV not found → Using synthetic high-cond data (p=5, cond≈200)")
-            # Generate a covariance matrix with high condition number
             Sigma = np.diag([1.0, 1.0, 1.0, 1.0, 215.0]) 
             p = 5
             name = "Synthetic"
         else:
             df = pd.read_csv(csv_path)
-            # Select only numeric data for covariance calculation
             X = df.select_dtypes(include=np.number).values.astype(np.float64)
-            # Filter out status/ID columns if they made it here
             if X.shape[1] < 2:
                 raise ValueError("Input CSV must contain at least 2 numeric columns.")
             
-            # Use Ledoit-Wolf for robust covariance estimation
             lw = LedoitWolf()
             lw.fit(X)
             Sigma = lw.covariance_
-            # tiny regularization (jitter) for numerical stability
             Sigma += np.eye(X.shape[1]) * 1e-8
             p = X.shape[1]
             name = "RealData"
@@ -152,27 +147,23 @@ class Engine:
         invS = np.linalg.inv(Sigma)
         vals, vecs = np.linalg.eigh(Sigma)
         
-        # Directions based on eigenvectors
-        v_easy = vecs[:, -1].astype(np.float64)    # largest variance direction
-        v_hard = vecs[:, 0].astype(np.float64)     # smallest variance direction
+        v_easy = vecs[:, -1].astype(np.float64)    
+        v_hard = vecs[:, 0].astype(np.float64)     
 
         shift = np.zeros(p, dtype=np.float64)
         scale = np.ones(p, dtype=np.float64)
 
         if name == "ARL0":
             pass # In-Control (IC)
-            
         elif name in ["Small", "Moderate", "Large"]:
             mag = {"Small": 1.0, "Moderate": 2.0, "Large": 3.5}[name]
             shift = mag * v_easy
-            # Normalize shift to ensure the shift magnitude (delta) is exactly 'mag'
             denom = math.sqrt(float(shift @ (invS @ shift)))
             if denom == 0.0:
                 denom = 1.0
             shift = shift / denom
             
         elif name == "Cond+4":
-            # Push along smallest-eigenvalue direction (hardest to detect)
             shift = 4.0 * v_hard
             denom = math.sqrt(float(shift @ (invS @ shift)))
             if denom == 0.0:
@@ -180,34 +171,23 @@ class Engine:
             shift = shift / denom
             
         elif name == "Inlier/Err":
-            # Reduce scale for the smallest-variance direction to model an inlier attack
             idx = int(np.argmin(vals))
             scale[idx] = 0.3
-        
-        # Always ensure the resulting vectors are normalized to unit magnitude 
-        # for robust shift scenarios if needed, but here we normalize by mahalanobis distance.
 
         return shift, scale
 
     def _get_seed_for_batch(self, batch_index, seed_offset):
-        """Deterministic seed generator based on base_seed, offset, and batch index."""
-        # Use a large multiplier to ensure separation between batches
         return np.uint64(self.base_seed + seed_offset + int(batch_index) * np.uint64(1000000))
 
     def run_parallel(self, lamb, h, inv_mat, shift_vec, scale_vec, n_rep, seed_offset):
-        """Splits the total repetitions into batches and runs them."""
         batch_size = int(self.args.batch_size)
         n_batches = (n_rep + batch_size - 1) // batch_size
-        
-        # Calculate size for each batch
         batch_sizes = [min(batch_size, n_rep - i * batch_size) for i in range(n_batches)]
-        # Calculate start seed for each batch
         seeds = [self._get_seed_for_batch(i, seed_offset) for i in range(n_batches)]
 
         all_rls = []
-        # Run batches sequentially. Numba handles parallelism within each batch.
         for i in range(n_batches):
-            L = np.linalg.cholesky(np.eye(inv_mat.shape[0])) # L should be Identity for scaled data
+            L = np.linalg.cholesky(np.eye(inv_mat.shape[0])) # Identity for scaled data
             batch_rl = simulate_batch(
                 lamb, h, inv_mat, np.zeros(inv_mat.shape[0]), L,
                 shift_vec, scale_vec, seeds[i], batch_sizes[i], self.max_rl
@@ -216,32 +196,26 @@ class Engine:
 
         all_rls = np.concatenate(all_rls)
         mean = float(np.mean(all_rls))
-        # Standard Error of the Mean (SEM)
         se = float(np.std(all_rls, ddof=1) / math.sqrt(len(all_rls))) if len(all_rls) > 1 else 0.0
         return mean, se
 
     def calibrate_h(self, lamb, inv_mat, mu, L, Sigma, seed_offset_base=0):
-        """Binary search to find control limit h that achieves target ARL0."""
         target = float(self.args.target_arl0)
-        # Sensible bracket for h (may need adjustment depending on p and lambda)
         low, high = 1.0, 200.0
         
         for iter in range(int(self.args.calib_iters)):
             mid = (low + high) / 2.0
-            # Use deterministic seed offset per iteration for better stability
             arl, _ = self.run_parallel(
                 lamb, mid, inv_mat, np.zeros_like(mu), np.ones_like(mu),
                 int(self.n_rep_cal), seed_offset=seed_offset_base + iter * 12345
             )
             self.log(f"  [Calib iter {iter+1:02d}] h = {mid:.6f} → ARL0 ≈ {arl:.2f}")
             
-            # Binary search logic: ARL increases with h
             if arl > target:
                 high = mid
             else:
                 low = mid
                 
-            # Stop early if the interval is narrow enough
             if (high - low) < 1e-3:
                 break
                 
@@ -257,53 +231,40 @@ class Engine:
             p = ds["p"]
             Sigma = ds["Sigma"].astype(np.float64)
             mu = np.zeros(p, dtype=np.float64)
-            # The Cholesky of Sigma is only needed for generating correlated noise (L)
             jitter = 1e-8
             L = np.linalg.cholesky(Sigma + np.eye(p) * jitter)
             invS = np.linalg.inv(Sigma)
 
-            # --- Calibration ---
-            # For MEWMA, the statistic uses inv_mat = (2-lambda)/lambda * inv(Sigma)
-            lamb = 0.1 # Using a fixed lambda as per the original file
+            lamb = float(self.args.lambda_value)  # Lambda value directly from arguments
             inv_mat_scaled = ((2.0 - lamb) / lamb) * invS
             
             h_per_seed = []
             self.log(f"\n[CALIB] Starting calibration for Lambda={lamb} (Target ARL0={self.args.target_arl0:.1f})")
             for seed_idx in range(self.n_seeds):
-                seed_offset_base = seed_idx * 1_000_000 # Different seed offset for each calibration run
+                seed_offset_base = seed_idx * 1_000_000
                 self.log(f"  --- Calibrating Seed {seed_idx} ---")
-                # L is passed, but the run_parallel and kernel_mewma functions are structured
-                # to use L for noise projection, and inv_mat_scaled for T2 calculation.
                 h = self.calibrate_h(lamb, inv_mat_scaled, mu, L, Sigma, seed_offset_base)
                 h_per_seed.append(h)
                 
             h_final = float(np.median(np.array(h_per_seed)))
             self.log(f"[CALIB] Median h over {self.n_seeds} seeds = {h_final:.8f}")
 
-            # --- Evaluation Scenarios ---
             self.log(f"\n[EVAL] Starting final evaluation with h={h_final:.8f}")
             for seed_idx in range(self.n_seeds):
                 row = {"Dataset": ds["name"], "Lambda": lamb, "h": round(h_final, 8), "Seed": seed_idx}
-                
-                # Use a very large seed offset for evaluation to separate from calibration seeds
                 eval_seed_offset = seed_idx * 100_000_000
                 
                 for sc in ["ARL0", "Small", "Moderate", "Large", "Cond+4", "Inlier/Err"]:
-                    # Get the shift/scale for the scenario
                     shift, scale = self.get_scenario(sc, Sigma)
-                    
-                    # Run the simulation
                     mean, se = self.run_parallel(
                         lamb, h_final, inv_mat_scaled, shift, scale,
                         int(self.n_rep_final), seed_offset=eval_seed_offset
                     )
-                    
-                    row[sc] = f"{mean:.2f} \u00B1 {se:.2f}" # Format as "Mean ± SE"
+                    row[sc] = f"{mean:.2f} \u00B1 {se:.2f}"
                     self.log(f"  {sc:12s} | Seed {seed_idx:02d} → {mean:.2f} \u00B1 {se:.2f}")
                     
                 all_results.append(row)
 
-            # Save the final summary
             summary_df = pd.DataFrame(all_results)
             summary_path = self.out_dir / f"{ds['name']}_MEWMA_SUMMARY_L{lamb:.2f}_P{p}.csv"
             summary_df.to_csv(summary_path, index=False)
@@ -316,44 +277,26 @@ def parse_args():
         prog="improved_simulation_engine_fixed.py",
         description="Run Numba-optimized MEWMA simulations for multi-variate process control."
     )
-    # File Paths
     parser.add_argument("--csv_path", type=str, default="phase2_final_features.csv", 
                         help="Path to the CSV file containing phase I data.")
     parser.add_argument("--out", type=str, default="results_combined", 
                         help="Output directory for results.")
-    
-    # Repetition Settings
-    parser.add_argument("--n_seeds", type=int, default=3, 
-                        help="Number of independent seeds (replicates) to average over.")
-    parser.add_argument("--n_rep_cal", type=int, default=20000, 
-                        help="Number of repetitions used for calibration of h (per seed).")
-    parser.add_argument("--n_rep_final", type=int, default=50000, 
-                        help="Number of repetitions used for final scenario evaluation (per seed).")
-    
-    # Simulation Parameters
-    parser.add_argument("--base_seed", type=int, default=42514251, 
-                        help="Base seed for random number generation.")
-    parser.add_argument("--max_rl", type=int, default=5_000_000, 
-                        help="Maximum run length to simulate (to prevent infinite loops).")
-    parser.add_argument("--batch_size", type=int, default=10000, 
-                        help="Internal batch size for Numba's parallel execution.")
-                        
-    # Calibration Parameters
-    parser.add_argument("--calib_iters", type=int, default=25, 
-                        help="Binary search iterations for h calibration.")
-    parser.add_argument("--target_arl0", type=float, default=370.0, 
-                        help="Target In-Control Average Run Length (ARL0).")
+    parser.add_argument("--n_seeds", type=int, default=3, help="Number of seeds.")
+    parser.add_argument("--n_rep_cal", type=int, default=20000, help="Reps used for calibration of h.")
+    parser.add_argument("--n_rep_final", type=int, default=1000000, help="Reps used for final evaluation (1 million).")
+    parser.add_argument("--base_seed", type=int, default=42514251, help="Base seed.")
+    parser.add_argument("--max_rl", type=int, default=5_000_000, help="Maximum run length.")
+    parser.add_argument("--batch_size", type=int, default=10000, help="Internal batch size for Numba.")
+    parser.add_argument("--calib_iters", type=int, default=25, help="Calibration iterations for h.")
+    parser.add_argument("--target_arl0", type=float, default=370.0, help="Target ARL0.")
+    parser.add_argument("--lambda_value", type=float, required=True, help="Lambda value for the current simulation.")
     return parser.parse_args()
 
 
 if __name__ == "__main__":
     args = parse_args()
-    
     print(f"--- Starting MEWMA Engine (Numba/Argparse fixed) ---")
-    
-    # Print the command used to run (helpful for debugging GH Actions)
-    print(f"Command executed:")
+    print(f"Command executed: ")
     print(" ".join(sys.argv))
-    
     Engine(args).execute()
     print("--- Simulation Finished Successfully ---")
