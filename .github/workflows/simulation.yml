@@ -1,86 +1,105 @@
-name: Simulation Workflow
+name: Simulation Workflow (20 Matrices)
 
 on:
   push:
     branches: [ main ]
+
   workflow_dispatch:
     inputs:
       lambda_value:
-        description: 'Lambda value to run simulation for'
+        description: "Lambda value for simulation"
         required: true
-        default: '0.1'
+        default: "0.1"
+
+env:
+  N_MATRICES: 20
+  N_REP_FINAL_PER_MATRIX: 50000
 
 jobs:
+
   simulate:
     runs-on: ubuntu-latest
 
+    strategy:
+      matrix:
+        shard: [0,1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,16,17,18,19]
+
     steps:
+
       - name: Checkout repository
         uses: actions/checkout@v4
 
       - name: Set up Python
         uses: actions/setup-python@v5
         with:
-          python-version: '3.12'
+          python-version: "3.12"
 
       - name: Install dependencies
         run: |
           pip install numpy pandas joblib scikit-learn numba
 
-      - name: Run Simulation for lambda=${{ github.event.inputs.lambda_value }}
+      - name: Run Simulation (Shard ${{ matrix.shard }})
         run: |
-          # محاسبه seed منحصر به فرد برای هر شارد
-          SEED=$((42 + 100000))
+          SHARD=${{ matrix.shard }}
+          LAMBDA=${{ github.event.inputs.lambda_value }}
 
-          # اجرای شبیه‌سازی با λ مشخص‌شده:
+          BASE_SEED=$(( 1000 + SHARD ))
+          
+          mkdir -p results
+
+          echo "Running shard $SHARD with seed=$BASE_SEED"
+
           python simulation_engine.py \
-            --lambda_value ${{ github.event.inputs.lambda_value }} \
+            --lambda_value $LAMBDA \
             --n_seeds 1 \
             --n_rep_cal 20000 \
-            --n_rep_final 1000000 \
-            --base_seed $SEED \
+            --n_rep_final $N_REP_FINAL_PER_MATRIX \
+            --base_seed $BASE_SEED \
+            --shard_index $SHARD \
             --out results
 
-      - name: Upload Simulation Results
+      - name: Upload Shard Artifact
         uses: actions/upload-artifact@v4
         with:
-          name: results_lambda-${{ github.event.inputs.lambda_value }}
+          name: shard_${{ matrix.shard }}_lambda_${{ github.event.inputs.lambda_value }}
           path: results
-          retention-days: 1
+          retention-days: 2
 
-      - name: Upload Log (optional, for debug)
-        if: always()
-        uses: actions/upload-artifact@v4
-        with:
-          name: log_lambda-${{ github.event.inputs.lambda_value }}
-          path: results/execution_log.txt
-          retention-days: 1
 
   merge_results:
     runs-on: ubuntu-latest
     needs: simulate
+
     steps:
+
       - name: Checkout repository
         uses: actions/checkout@v4
 
       - name: Set up Python
         uses: actions/setup-python@v5
         with:
-          python-version: '3.12'
+          python-version: "3.12"
 
       - name: Install pandas
         run: pip install pandas
 
-      - name: Merge Simulation Results
+      - name: Download All Shard Results
+        uses: actions/download-artifact@v4
+        with:
+          path: merged_shards
+
+      - name: Merge All 20 Matrices
         run: |
+          mkdir -p aggregated_results
+          
           python merge_results.py \
-            --input_dir "results" \
+            --input_dir "merged_shards" \
             --output "aggregated_results/final_report_lambda_${{ github.event.inputs.lambda_value }}.csv" \
             --lambda_value ${{ github.event.inputs.lambda_value }}
 
       - name: Upload Final Merged Report
         uses: actions/upload-artifact@v4
         with:
-          name: final_report_lambda-${{ github.event.inputs.lambda_value }}
+          name: final_report_lambda_${{ github.event.inputs.lambda_value }}
           path: aggregated_results/final_report_lambda_${{ github.event.inputs.lambda_value }}.csv
           retention-days: 7
