@@ -1,151 +1,86 @@
-#!/usr/bin/env python3
-"""
-simulation_engine.py - FINAL VERSION (No Errors on GitHub Actions)
-"""
-
-import os
-os.environ["OMP_NUM_THREADS"] = "1"
-os.environ["MKL_NUM_THREADS"] = "1"
-os.environ["OPENBLAS_NUM_THREADS"] = "1"
-
 import argparse
-import logging
-from pathlib import Path
 import numpy as np
 import pandas as pd
-from sklearn.covariance import LedoitWolf
-import math
+from numba import njit, prange
 
-try:
-    from numba import njit, prange
-except ImportError:
-    print("CRITICAL: numba not installed")
-    exit(1)
+# -----------------------------------------
+# Efficient batch-based Gaussian sampling
+# -----------------------------------------
+@njit(fastmath=True, nogil=True)
+def generate_normal_batch(n, p, seed):
+    rng = np.random.RandomState(seed)
+    return rng.normal(0.0, 1.0, (n, p))
 
-# -------------------- اول پوشه بساز، بعد لاگ تنظیم کن --------------------
-def setup_logging(out_dir="results"):
-    Path(out_dir).mkdir(exist_ok=True)  # این خط حیاتی بود!
-    logging.basicConfig(
-        level=logging.INFO,
-        format='%(asctime)s - %(levelname)s - %(message)s',
-        handlers=[
-            logging.FileHandler(Path(out_dir) / "execution_log.txt", encoding='utf-8'),
-            logging.StreamHandler()
-        ]
-    )
+# -----------------------------------------
+# Fast MEWMA simulation kernel
+# -----------------------------------------
+@njit(fastmath=True, nogil=True, parallel=True)
+def simulate_batch(lamb, h, L, inv_mat, shift, scale, seeds, max_steps):
+    n = seeds.shape[0]
+    p = shift.shape[0]
+    results = np.empty(n, dtype=np.int32)
 
-# -------------------- Numba Kernels --------------------
-@njit(inline='always')
-def rand_normal(state):
-    u1 = 1.0
-    while u1 == 0:
-        state = (state * 6364136223846793005 + 1) & 0xFFFFFFFFFFFFFFFF
-        u1 = state / 18446744073709551616.0
-    state = (state * 6364136223846793005 + 1) & 0xFFFFFFFFFFFFFFFF
-    u2 = state / 18446744073709551616.0
-    r = math.sqrt(-2.0 * math.log(u1))
-    return r * math.cos(2.0 * math.pi * u2), state
+    for i in prange(n):
+        rng = np.random.RandomState(seeds[i])
+        Z = np.zeros(p)
+        for t in range(1, max_steps + 1):
+            noise = rng.normal(0.0, 1.0, p)
+            X = shift + scale * L.dot(noise)
+            Z = (1 - lamb) * Z + lamb * X
+            stat = Z @ inv_mat @ Z
+            if stat > h:
+                results[i] = t
+                break
+        else:
+            results[i] = max_steps
+    return results
 
-@njit(nogil=True, fastmath=True, cache=True)
-def kernel_mewma(lamb, h, inv_mat, L, shift_vec, scale_vec, seed, max_steps):
-    state = seed
-    p = L.shape[0]
-    Z = np.zeros(p, dtype=np.float64)
-    for t in range(1, max_steps + 1):
-        noise = np.zeros(p, dtype=np.float64)
-        for i in range(0, p, 2):
-            n1, state = rand_normal(state)
-            noise[i] = n1
-            if i + 1 < p:
-                n2, state = rand_normal(state)
-                noise[i+1] = n2
-        X = shift_vec + scale_vec * np.dot(L, noise)
-        Z = (1 - lamb) * Z + lamb * X
-        stat = np.dot(Z, np.dot(inv_mat, Z))
-        if stat > h:
-            return t
-    return max_steps
-
-@njit(nogil=True, fastmath=True, cache=True, parallel=True)
-def simulate_batch(lamb, h, inv_mat, L, shift, scale, seed_start, n_rep, max_steps):
-    out = np.empty(n_rep, dtype=np.int64)
-    for i in prange(n_rep):
-        out[i] = kernel_mewma(lamb, h, inv_mat, L, shift, scale, seed_start + i, max_steps)
-    return out
-
-# -------------------- Main Engine --------------------
+# -----------------------------------------
+# Main
+# -----------------------------------------
 def main():
     parser = argparse.ArgumentParser()
-    parser.add_argument("--input_file", type=str, default="phase2_final_features.csv")
     parser.add_argument("--lambda_value", type=float, required=True)
-    parser.add_argument("--n_rep_final", type=int, default=50000)
-    parser.add_argument("--base_seed", type=int, default=2025)
-    parser.add_argument("--shard_index", type=int, required=True)
+    parser.add_argument("--n_sim", type=int, default=50000)
+    parser.add_argument("--base_seed", type=int, default=1234)
     parser.add_argument("--out", type=str, default="results")
     args = parser.parse_args()
 
-    # اول لاگ رو تنظیم کن (پوشه می‌سازه)
-    setup_logging(args.out)
-
     lamb = args.lambda_value
-    shard = args.shard_index
-    seed = args.base_seed + shard * 1000
-    out_dir = Path(args.out)
 
-    logging.info(f"STARTED → Shard {shard} | λ={lamb} | Reps={args.n_rep_final} | Seed={seed}")
+    # Load Phase 2 feature matrix
+    df = pd.read_csv("phase2_final_features.csv")
+    L = df.values
+    p = L.shape[0]
 
-    # Load data
-    df = pd.read_csv(args.input_file)
-    feats = ["mean_error", "inlier_ratio", "log_cond_H"]
-    X = df[feats].values
-    lw = LedoitWolf().fit(X)
-    Sigma = lw.covariance_ + np.eye(3) * 1e-2
-    L = np.linalg.cholesky(Sigma)
-    invS = np.linalg.inv(Sigma)
-    inv_mat = ((2.0 - lamb) / lamb) * invS
+    inv_mat = np.linalg.inv(np.cov(L))  # Fast estimation
 
-    # Calibrate h
-    target = 370.0
-    low, high = 1.0, 100.0
-    for _ in range(18):
-        mid = (low + high) / 2
-        rl = simulate_batch(lamb, mid, inv_mat, L, np.zeros(3), np.ones(3), seed, 10000, 1000000)
-        if np.mean(rl) > target:
-            high = mid
-        else:
-            low = mid
-    h = (low + high) / 2
-    logging.info(f"Calibrated h = {h:.4f}")
-
-    # Scenarios
-    results = []
+    # Example shift vectors (IC, small, moderate ...)
     scenarios = {
-        "IC":       (np.zeros(3), np.ones(3)),
-        "small":    (np.array([1.5, 0.0, 0.0]), np.ones(3)),
-        "moderate": (np.array([3.0, 0.0, 0.0]), np.ones(3)),
-        "large":    (np.array([6.0, 0.0, 0.0]), np.ones(3)),
-        "cond":     (np.array([0.0, 0.0, 5.0]), np.ones(3)),
-        "inlier":   (np.zeros(3), np.array([1.0, 0.3, 1.0]))
+        "IC":      np.zeros(p),
+        "small":   np.ones(p) * 0.1,
+        "moderate":np.ones(p) * 0.3,
+        "large":   np.ones(p) * 0.6,
     }
 
-    for name, (shift, scale) in scenarios.items():
-        rl = simulate_batch(lamb, h, inv_mat, L, shift, scale, seed + 100000, args.n_rep_final, 1000000)
-        mean_rl = np.mean(rl)
-        se = np.std(rl, ddof=1) / np.sqrt(len(rl))
-        results.append({
-            "Lambda": lamb,
-            "Scenario": name,
-            "ARL": round(mean_rl, 2),
-            "SE": round(se, 2),
-            "h": round(h, 4),
-            "shard": shard
-        })
-        logging.info(f"{name}: {mean_rl:.2f} ± {se:.2f}")
+    # Calibrated h (placeholder: set per-lambda)
+    h = 8.5
 
-    # Save
-    out_file = out_dir / f"results_lambda_{lamb}_shard_{shard}.csv"
-    pd.DataFrame(results).to_csv(out_file, index=False)
-    logging.info(f"COMPLETED → {out_file}")
+    seeds = np.random.randint(0, 2**32, size=args.n_sim)
+
+    records = []
+    for name, shift in scenarios.items():
+        res = simulate_batch(
+            lamb, h, L, inv_mat, shift,
+            scale=1.0,
+            seeds=seeds,
+            max_steps=50000
+        )
+        arl = res.mean()
+        records.append([lamb, name, arl])
+
+    out_df = pd.DataFrame(records, columns=["Lambda", "Scenario", "ARL"])
+    out_df.to_csv(f"{args.out}/results_lambda_{lamb}.csv", index=False)
 
 if __name__ == "__main__":
     main()
