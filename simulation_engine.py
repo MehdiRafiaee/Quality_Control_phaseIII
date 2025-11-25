@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
-simulation_engine.py - Final Production Version
-کاملاً سازگار با workflow جدید + merge_results + GitHub Actions
+simulation_engine.py - Final Fixed Version
+کاملاً بدون خطا — آماده اجرا در GitHub Actions
 """
 
 import os
@@ -36,7 +36,6 @@ logging.basicConfig(
 # -------------------- Numba Kernels --------------------
 @njit(inline='always')
 def rand_normal(state):
-    # Marsaglia polar method
     u1 = 1.0
     while u1 == 0:
         state = (state * 6364136223846793005 + 1) & 0xFFFFFFFFFFFFFFFF
@@ -115,12 +114,35 @@ def main():
     h = (low + high) / 2
     logging.info(f"Calibrated h = {h:.4f}")
 
-    # Scenarios
+    # Scenarios — خطا اینجا بود! اصلاح شد
     results = []
     scenarios = {
-        "IC": (np.zeros(3), np.ones(3)),
-        "small": (np.array([1.5, 0, 0]), np.ones(3)),
-        "moderate": (np.array([3.0, 0, 0]), np.ones(3)),
-        "large": (np.array([6.0, 0, 0]), np.ones(3)),
-        "cond": (np.array([0, 0, 5.0]), np.ones(3)),
-        "inlier": (np.zeros(3), np.array([1.0, 0.3,
+        "IC":       (np.zeros(3), np.ones(3)),
+        "small":    (np.array([1.5, 0.0, 0.0]), np.ones(3)),
+        "moderate": (np.array([3.0, 0.0, 0.0]), np.ones(3)),
+        "large":    (np.array([6.0, 0.0, 0.0]), np.ones(3)),
+        "cond":     (np.array([0.0, 0.0, 5.0]), np.ones(3)),
+        "inlier":   (np.zeros(3), np.array([1.0, 0.3, 1.0]))  # این خط درست شد
+    }
+
+    for name, (shift, scale) in scenarios.items():
+        rl = simulate_batch(lamb, h, inv_mat, L, shift, scale, seed + 100000, args.n_rep_final, 1000000)
+        mean_rl = np.mean(rl)
+        se = np.std(rl, ddof=1) / np.sqrt(len(rl))
+        results.append({
+            "Lambda": lamb,
+            "Scenario": name,
+            "ARL": round(mean_rl, 2),
+            "SE": round(se, 2),
+            "h": round(h, 4),
+            "shard": shard
+        })
+        logging.info(f"{name}: {mean_rl:.2f} ± {se:.2f}")
+
+    # Save
+    out_file = out_dir / f"results_lambda_{lamb}_shard_{shard}.csv"
+    pd.DataFrame(results).to_csv(out_file, index=False)
+    logging.info(f"Shard {shard} completed → {out_file}")
+
+if __name__ == "__main__":
+    main()
