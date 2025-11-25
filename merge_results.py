@@ -1,7 +1,6 @@
 import argparse
-import pandas as pd
 from pathlib import Path
-import sys
+import pandas as pd
 
 def main():
     parser = argparse.ArgumentParser(description="Merge Simulation Results")
