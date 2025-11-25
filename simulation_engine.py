@@ -3,30 +3,35 @@ import numpy as np
 import pandas as pd
 from pathlib import Path
 import time
-
+import sys
 
 def run_simulation(lambda_value, n_rep_cal, n_rep_final, base_seed, shard_index):
+    """
+    اجرای شبیه‌سازی با استفاده از Generator جدید NumPy برای سرعت و دقت بیشتر.
+    """
+    # استفاده از PCG64 که سریع‌تر و مدرن‌تر از MT19937 (روش قدیمی) است
+    rng = np.random.default_rng(seed=base_seed)
 
-    np.random.seed(base_seed)
+    # تولید داده‌ها
+    # نکته: در نسخه جدید نامپای، متد exponential روی شیء rng صدا زده می‌شود
+    cal_data = rng.exponential(scale=1/lambda_value, size=n_rep_cal)
+    final_data = rng.exponential(scale=1/lambda_value, size=n_rep_final)
 
-    # نمونه‌سازی ساده. شما جایگزین می‌کنید با مدل خودتان
-    cal_data = np.random.exponential(1/lambda_value, size=n_rep_cal)
-    final_data = np.random.exponential(1/lambda_value, size[n_rep_final])
-
+    # ساخت دیتافریم نتایج
     df = pd.DataFrame({
-        "lambda": lambda_value,
-        "shard": shard_index,
-        "seed": base_seed,
-        "calibration_value": [cal_data.mean()],
+        "lambda": [lambda_value],
+        "shard": [shard_index],
+        "seed": [base_seed],
+        "calibration_mean": [cal_data.mean()],
         "final_mean": [final_data.mean()],
-        "final_var": [final_data.var()]
+        "final_var": [final_data.var()],
+        "n_samples": [n_rep_final]
     })
 
     return df
 
-
 def main():
-    parser = argparse.ArgumentParser()
+    parser = argparse.ArgumentParser(description="Monte Carlo Simulation Engine")
 
     parser.add_argument("--lambda_value", type=float, default=0.1)
     parser.add_argument("--n_seeds", type=int, default=1)
@@ -38,23 +43,39 @@ def main():
 
     args = parser.parse_args()
 
+    # ایجاد مسیر خروجی
     out_dir = Path(args.out)
     out_dir.mkdir(parents=True, exist_ok=True)
 
-    df = run_simulation(
-        args.lambda_value,
-        args.n_rep_cal,
-        args.n_rep_final,
-        args.base_seed,
-        args.shard_index
-    )
+    print(f"Starting simulation for Shard {args.shard_index} with Lambda={args.lambda_value}...")
+    start_time = time.time()
 
-    out_file = out_dir / f"results_lambda_{args.lambda_value}_shard_{args.shard_index}.csv"
-    df.to_csv(out_file, index=False)
+    try:
+        df = run_simulation(
+            args.lambda_value,
+            args.n_rep_cal,
+            args.n_rep_final,
+            args.base_seed,
+            args.shard_index
+        )
 
-    with open(out_dir / f"execution_log_shard_{args.shard_index}.txt", "w") as f:
-        f.write(f"Finished shard {args.shard_index} at {time.ctime()}\n")
+        # ذخیره فایل CSV
+        out_file = out_dir / f"results_lambda_{args.lambda_value}_shard_{args.shard_index}.csv"
+        df.to_csv(out_file, index=False)
+        
+        elapsed = time.time() - start_time
+        print(f"Shard {args.shard_index} completed in {elapsed:.4f} seconds.")
 
+        # ذخیره لاگ اجرا (اختیاری ولی مفید برای دیباگ)
+        with open(out_dir / f"log_shard_{args.shard_index}.txt", "w") as f:
+            f.write(f"Shard: {args.shard_index}\n")
+            f.write(f"Status: Success\n")
+            f.write(f"Duration: {elapsed:.4f}s\n")
+            f.write(f"Timestamp: {time.ctime()}\n")
+
+    except Exception as e:
+        print(f"Error in shard {args.shard_index}: {e}", file=sys.stderr)
+        sys.exit(1)
 
 if __name__ == "__main__":
     main()
