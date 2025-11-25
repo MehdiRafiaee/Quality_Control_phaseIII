@@ -1,17 +1,12 @@
-name: Phase III MEWMA Simulation
+name: Simulation Workflow
 
 on:
   workflow_dispatch:
     inputs:
       lambda_value:
-        description: 'MEWMA Lambda (0.05)'
+        description: "Lambda value"
+        default: "0.1"
         required: true
-        default: '0.10'
-  push:
-    branches: [ main ]
-
-env:
-  N_REP_PER_SHARD: 100000
 
 jobs:
   simulate:
@@ -23,56 +18,60 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Setup Python + Cache
+      - name: Setup Python
         uses: actions/setup-python@v5
         with:
-          python-version: '3.12'
-          cache: 'pip'
+          python-version: "3.12"
 
-      - name: Install dependencies (cached)
-        run: |
-          pip install -r requirements.txt
+      - name: Install req
+        run: pip install -r requirements.txt
 
-      - name: Run Simulation Shard
+      - name: Run shard
         run: |
-          LAMBDA="${{ inputs.lambda_value || '0.10' }}"
+          mkdir -p results
+          N_SIM=$((1000000/20))
+          SEED=$((10000 + ${{matrix.shard}}))
           python simulation_engine.py \
-            --input_file phase2_final_features.csv \
-            --lambda_value $LAMBDA \
-            --n_rep_final $N_REP_PER_SHARD \
-            --base_seed $((2025 + ${{ matrix.shard }} * 100)) \
-            --shard_index ${{ matrix.shard }} \
+            --lambda_value ${{ github.event.inputs.lambda_value }} \
+            --n_sim $N_SIM \
+            --base_seed $SEED \
             --out results
 
-      - name: Upload Shard
+      - name: Upload shard
         uses: actions/upload-artifact@v4
         with:
-          name: shard-${{ matrix.shard }}
-          path: results/results_lambda_*.csv
-          if-no-files-found: warn
+          name: shard-${{matrix.shard}}
+          path: results
 
   merge:
-    needs: simulate
     runs-on: ubuntu-latest
+    needs: simulate
+
     steps:
       - uses: actions/checkout@v4
-      
-      - uses: actions/download-artifact@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
         with:
-          path: shards
+          python-version: "3.12"
+
+      - run: pip install pandas
+
+      - name: Download all shards
+        uses: actions/download-artifact@v4
+        with:
+          pattern: shard-*
+          path: all_shards
           merge-multiple: true
 
-      - name: Merge Results
+      - name: Merge
         run: |
-          LAMBDA="${{ inputs.lambda_value || '0.10' }}"
           python merge_results.py \
-            --input_dir shards \
-            --output "FINAL_REPORT_lambda_${LAMBDA}.csv" \
-            --lambda_value "$LAMBDA"
+            --input_dir all_shards \
+            --output final_report.csv
 
-      - name: Upload Final Report
+      - name: Upload final
         uses: actions/upload-artifact@v4
         with:
-          name: FINAL_MEWMA_REPORT
-          path: FINAL_REPORT_lambda_*.csv
-          retention-days: 30
+          name: final_report
+          path: final_report.csv
