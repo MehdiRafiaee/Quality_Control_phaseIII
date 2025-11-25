@@ -1,4 +1,4 @@
-name: Simulation Workflow
+name: MEWMA Phase III Simulation
 
 on:
   push:
@@ -9,12 +9,12 @@ jobs:
   simulate:
     runs-on: ubuntu-latest
     strategy:
-      # اجرای 20 شارد موازی برای توزیع بار محاسباتی
       matrix:
-        shard: [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19]
+        lambda: [0.05, 0.10, 0.20]
+        shard: [0, 1, 2, 3, 4]  # فقط ۵ شارد برای هر λ → در مجموع ۱۵ job (کافی و سریع)
 
     steps:
-      - name: Checkout repository
+      - name: Checkout
         uses: actions/checkout@v4
 
       - name: Set up Python
@@ -24,67 +24,30 @@ jobs:
 
       - name: Install dependencies
         run: |
-          pip install numpy pandas joblib scikit-learn numba
+          pip install numpy pandas scikit-learn numba joblib
 
-      - name: Run Simulation Shard
-        # استفاده از نام اسکریپت بهبود یافته و آرگومان‌های کامل
+      - name: Run Simulation (λ=${{ matrix.lambda }}, shard=${{ matrix.shard }})
         run: |
-          # محاسبه seed منحصر به فرد برای هر شارد
-          SEED=$((42 + ${{ matrix.shard }} * 100000))
-          
-          # اجرای شبیه‌سازی:
-          # --n_seeds 1: هر شارد فقط یک اجرای مستقل (Seed) را انجام می‌دهد.
-          # --n_rep_cal: تعداد تکرارها برای کالیبراسیون h (معمولاً کمتر)
-          # --n_rep_final: تعداد تکرارها برای محاسبه نهایی ARL (25000 از تنظیم قبلی شما)
-          # --base_seed: تعیین Seed منحصر به فرد برای این Job
           python simulation_engine.py \
+            --csv_path phase2_final_features.csv \
+            --out results \
             --n_seeds 1 \
             --n_rep_cal 20000 \
-            --n_rep_final 25000 \
-            --base_seed $SEED \
-            --out results
+            --n_rep_final 500000 \
+            --base_seed $((1000 + ${{ matrix.shard }} * 100 + ${{ matrix.lambda }} * 1000)) \
+            --lambda_value ${{ matrix.lambda }}
 
-      - name: Upload Shard Results
+      - name: Upload Results
         uses: actions/upload-artifact@v4
         with:
-          # نام فایل خروجی بر اساس ساختار جدید اسکریپت (به عنوان مثال، FINAL_SUMMARY_WITH_SE.csv در پوشه results)
-          name: shard-${{ matrix.shard }}
-          # Path باید به فایل نهایی تولید شده توسط اسکریپت اشاره کند. 
-          # اگر اسکریپت شما فایل را به صورت "results/FINAL_SUMMARY_WITH_SE.csv" تولید می‌کند، نیاز است که آن را تغییر دهید
-          # تا بر اساس shard_id نام‌گذاری شود، یا از فایل یکتا در پوشه استفاده کنید.
-          # فرض می‌کنیم فایل با نام ثابت در پوشه out ذخیره می‌شود، بنابراین آن را به نام شارد تغییر نام می‌دهیم:
-          path: results/FINAL_SUMMARY_WITH_SE.csv # نام پیش‌فرض فایل خروجی اسکریپت
-          retention-days: 1
-
-      - name: Rename and Upload Single Shard File
-        run: |
-          # تغییر نام فایل نهایی برای جلوگیری از تداخل در هنگام دانلود و جمع‌آوری
-          mv results/FINAL_SUMMARY_WITH_SE.csv results/results_shard_${{ matrix.shard }}.csv
-          
-      - name: Final Upload Shard Results
-        uses: actions/upload-artifact@v4
-        with:
-          name: shard-${{ matrix.shard }}
-          path: results/results_shard_${{ matrix.shard }}.csv
-          retention-days: 1
-
-      - name: Upload Log (optional, for debug)
-        if: always()
-        uses: actions/upload-artifact@v4
-        with:
-          # فرض می‌کنیم log اسکریپت در stdout/stderr نمایش داده می‌شود و نیازی به ذخیره فایل log جداگانه نیست.
-          # اگر اسکریپت شما لاگ را در 'results/execution_log.txt' ذخیره می‌کند، این خط را فعال نگه دارید:
-          name: log-${{ matrix.shard }}
-          path: results/execution_log.txt
-          retention-days: 1
-
+          name: results-l${{ matrix.lambda }}-shard${{ matrix.shard }}
+          path: results/*_MEWMA_SUMMARY_*.csv
 
   aggregate:
     runs-on: ubuntu-latest
     needs: simulate
-
     steps:
-      - name: Checkout repository
+      - name: Checkout
         uses: actions/checkout@v4
 
       - name: Set up Python
@@ -92,32 +55,26 @@ jobs:
         with:
           python-version: '3.12'
 
-      - name: Install pandas
-        run: pip install pandas
-
-      - name: Download All Shards
+      - name: Download All Results
         uses: actions/download-artifact@v4
         with:
-          pattern: shard-*
-          path: all_shards
-          merge-multiple: true
+          path: all_results
 
-      - name: Prepare aggregation directory
+      - name: Prepare Aggregation
         run: |
-          mkdir -p aggregated_results
-          # کپی کردن فایل‌های تغییر نام داده شده
-          find all_shards -name "results_shard_*.csv" -exec cp {} aggregated_results/ \;
-          ls -la aggregated_results/
+          mkdir -p aggregated
+          find all_results -name "*_MEWMA_SUMMARY_*.csv" -exec cp {} aggregated/ \;
+          ls -la aggregated/
 
-      - name: Run Merge Script
+      - name: Merge Results
         run: |
           python merge_results.py \
-            --input_dir aggregated_results \
-            --output aggregated_results/final_report.csv
+            --input_dir aggregated \
+            --output final_report_phase3.csv
 
       - name: Upload Final Report
         uses: actions/upload-artifact@v4
         with:
-          name: FINAL_REPORT
-          path: aggregated_results/final_report.csv
-          retention-days: 7
+          name: FINAL_PHASE3_REPORT
+          path: final_report_phase3.csv
+          retention-days: 30
