@@ -1,5 +1,4 @@
 name: Simulation Workflow
-
 on:
   workflow_dispatch:
     inputs:
