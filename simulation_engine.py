@@ -28,7 +28,7 @@ def run_simulation(lambda_value, n_rep_cal, n_rep_final, base_seed, shard_index)
 def main():
     parser = argparse.ArgumentParser()
 
-    parser.add_argument("--lambda_value", type=float, required=True)
+    parser.add_argument("--lambda_value", type=float, default=0.1)
     parser.add_argument("--n_seeds", type=int, default=1)
     parser.add_argument("--n_rep_cal", type=int, default=20000)
     parser.add_argument("--n_rep_final", type=int, default=50000)
