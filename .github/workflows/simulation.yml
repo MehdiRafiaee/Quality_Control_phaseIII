@@ -1,31 +1,29 @@
-name: Simulation Workflow (20 Matrices)
+name: Bootstrap Simulation (Real Data)
 
 on:
   push:
     branches: [ main ]
-
   workflow_dispatch:
     inputs:
       lambda_value:
-        description: "Lambda value for simulation"
+        description: "Inlier Ratio Threshold (Filter)"
         required: true
-        default: "0.1"
+        default: "0.0"
 
 env:
-  N_MATRICES: 20
-  N_REP_FINAL_PER_MATRIX: 50000
+  N_REP_FINAL_PER_SHARD: 50000
+  INPUT_CSV_NAME: "phase2_final_features.csv"
 
 jobs:
-
   simulate:
     runs-on: ubuntu-latest
-
     strategy:
+      fail-fast: false
       matrix:
+        # ایجاد ۲۰ شارد موازی (0 تا 19)
         shard: [0,1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,16,17,18,19]
 
     steps:
-
       - name: Checkout repository
         uses: actions/checkout@v4
 
@@ -33,27 +31,34 @@ jobs:
         uses: actions/setup-python@v5
         with:
           python-version: "3.12"
+          cache: 'pip' # افزایش سرعت با کش کردن پکیج‌ها
 
       - name: Install dependencies
         run: |
-          pip install numpy pandas joblib scikit-learn numba
+          pip install numpy pandas
 
-      - name: Run Simulation (Shard ${{ matrix.shard }})
+      - name: Verify Data Existence
+        run: |
+          if [ ! -f "$INPUT_CSV_NAME" ]; then
+            echo "::error::Input file '$INPUT_CSV_NAME' not found in repository root!"
+            exit 1
+          fi
+
+      - name: Run Bootstrap (Shard ${{ matrix.shard }})
         run: |
           SHARD=${{ matrix.shard }}
-          LAMBDA=${{ github.event.inputs.lambda_value }}
-
-          BASE_SEED=$(( 1000 + SHARD ))
+          # اگر ورودی وجود نداشت (در حالت push)، پیش‌فرض 0.0 در نظر گرفته می‌شود
+          LAMBDA="${{ github.event.inputs.lambda_value || '0.0' }}"
+          BASE_SEED=$(( 2025 + SHARD ))
           
           mkdir -p results
-
-          echo "Running shard $SHARD with seed=$BASE_SEED"
+          
+          echo "Running Shard $SHARD | Threshold: $LAMBDA | Seed: $BASE_SEED"
 
           python simulation_engine.py \
-            --lambda_value $LAMBDA \
-            --n_seeds 1 \
-            --n_rep_cal 20000 \
-            --n_rep_final $N_REP_FINAL_PER_MATRIX \
+            --input_file "$INPUT_CSV_NAME" \
+            --lambda_value "$LAMBDA" \
+            --n_rep_final $N_REP_FINAL_PER_SHARD \
             --base_seed $BASE_SEED \
             --shard_index $SHARD \
             --out results
@@ -61,17 +66,16 @@ jobs:
       - name: Upload Shard Artifact
         uses: actions/upload-artifact@v4
         with:
-          name: shard_${{ matrix.shard }}_lambda_${{ github.event.inputs.lambda_value }}
-          path: results
-          retention-days: 2
-
+          # نام یکتا برای هر آرتیفکت
+          name: shard-${{ matrix.shard }}-results
+          path: results/*.csv
+          retention-days: 1
+          if-no-files-found: error
 
   merge_results:
     runs-on: ubuntu-latest
     needs: simulate
-
     steps:
-
       - name: Checkout repository
         uses: actions/checkout@v4
 
@@ -79,27 +83,35 @@ jobs:
         uses: actions/setup-python@v5
         with:
           python-version: "3.12"
+          cache: 'pip'
 
       - name: Install pandas
         run: pip install pandas
 
-      - name: Download All Shard Results
+      - name: Download All Artifacts
         uses: actions/download-artifact@v4
         with:
+          # دانلود تمام فایل‌هایی که با shard- شروع می‌شوند
+          pattern: shard-*-results
           path: merged_shards
+          # این گزینه حیاتی است: فایل‌ها را از پوشه‌ها خارج کرده و کنار هم می‌ریزد
+          merge-multiple: true
 
-      - name: Merge All 20 Matrices
+      - name: Merge Final Report
         run: |
+          LAMBDA="${{ github.event.inputs.lambda_value || '0.0' }}"
           mkdir -p aggregated_results
+          
+          echo "Merging files for Lambda: $LAMBDA"
           
           python merge_results.py \
             --input_dir "merged_shards" \
-            --output "aggregated_results/final_report_lambda_${{ github.event.inputs.lambda_value }}.csv" \
-            --lambda_value ${{ github.event.inputs.lambda_value }}
+            --output "aggregated_results/final_bootstrap_report_lambda_$LAMBDA.csv" \
+            --lambda_value "$LAMBDA"
 
-      - name: Upload Final Merged Report
+      - name: Upload Final CSV
         uses: actions/upload-artifact@v4
         with:
-          name: final_report_lambda_${{ github.event.inputs.lambda_value }}
-          path: aggregated_results/final_report_lambda_${{ github.event.inputs.lambda_value }}.csv
+          name: Final_Bootstrap_Report
+          path: aggregated_results/*.csv
           retention-days: 7
