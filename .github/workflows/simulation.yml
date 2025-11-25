@@ -4,7 +4,7 @@ on:
   workflow_dispatch:
     inputs:
       lambda_value:
-        description: 'MEWMA Lambda (e.g. 0.05, 0.10, 0.20)'
+        description: 'MEWMA Lambda (0.05, 0.10, 0.20)'
         required: true
         default: '0.10'
   push:
@@ -23,13 +23,15 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Setup Python
+      - name: Setup Python + Cache
         uses: actions/setup-python@v5
         with:
           python-version: '3.12'
+          cache: 'pip'
 
-      - name: Install dependencies
-        run: pip install numpy pandas scikit-learn numba
+      - name: Install dependencies (cached)
+        run: |
+          pip install -r requirements.txt
 
       - name: Run Simulation Shard
         run: |
@@ -47,12 +49,14 @@ jobs:
         with:
           name: shard-${{ matrix.shard }}
           path: results/results_lambda_*.csv
+          if-no-files-found: warn
 
   merge:
     needs: simulate
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+      
       - uses: actions/download-artifact@v4
         with:
           path: shards
