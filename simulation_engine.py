@@ -1,7 +1,6 @@
 #!/usr/bin/env python3
 """
-simulation_engine.py - Final Fixed Version
-کاملاً بدون خطا — آماده اجرا در GitHub Actions
+simulation_engine.py - FINAL VERSION (No Errors on GitHub Actions)
 """
 
 import os
@@ -23,15 +22,17 @@ except ImportError:
     print("CRITICAL: numba not installed")
     exit(1)
 
-# تنظیم لاگ
-logging.basicConfig(
-    level=logging.INFO,
-    format='%(asctime)s - %(levelname)s - %(message)s',
-    handlers=[
-        logging.FileHandler("results/execution_log.txt", encoding='utf-8'),
-        logging.StreamHandler()
-    ]
-)
+# -------------------- اول پوشه بساز، بعد لاگ تنظیم کن --------------------
+def setup_logging(out_dir="results"):
+    Path(out_dir).mkdir(exist_ok=True)  # این خط حیاتی بود!
+    logging.basicConfig(
+        level=logging.INFO,
+        format='%(asctime)s - %(levelname)s - %(message)s',
+        handlers=[
+            logging.FileHandler(Path(out_dir) / "execution_log.txt", encoding='utf-8'),
+            logging.StreamHandler()
+        ]
+    )
 
 # -------------------- Numba Kernels --------------------
 @njit(inline='always')
@@ -83,13 +84,15 @@ def main():
     parser.add_argument("--out", type=str, default="results")
     args = parser.parse_args()
 
+    # اول لاگ رو تنظیم کن (پوشه می‌سازه)
+    setup_logging(args.out)
+
     lamb = args.lambda_value
     shard = args.shard_index
     seed = args.base_seed + shard * 1000
     out_dir = Path(args.out)
-    out_dir.mkdir(exist_ok=True)
 
-    logging.info(f"Shard {shard} | λ={lamb} | Seed={seed} | Reps={args.n_rep_final}")
+    logging.info(f"STARTED → Shard {shard} | λ={lamb} | Reps={args.n_rep_final} | Seed={seed}")
 
     # Load data
     df = pd.read_csv(args.input_file)
@@ -101,7 +104,7 @@ def main():
     invS = np.linalg.inv(Sigma)
     inv_mat = ((2.0 - lamb) / lamb) * invS
 
-    # Calibrate h (ARL0 ≈ 370)
+    # Calibrate h
     target = 370.0
     low, high = 1.0, 100.0
     for _ in range(18):
@@ -114,7 +117,7 @@ def main():
     h = (low + high) / 2
     logging.info(f"Calibrated h = {h:.4f}")
 
-    # Scenarios — خطا اینجا بود! اصلاح شد
+    # Scenarios
     results = []
     scenarios = {
         "IC":       (np.zeros(3), np.ones(3)),
@@ -122,7 +125,7 @@ def main():
         "moderate": (np.array([3.0, 0.0, 0.0]), np.ones(3)),
         "large":    (np.array([6.0, 0.0, 0.0]), np.ones(3)),
         "cond":     (np.array([0.0, 0.0, 5.0]), np.ones(3)),
-        "inlier":   (np.zeros(3), np.array([1.0, 0.3, 1.0]))  # این خط درست شد
+        "inlier":   (np.zeros(3), np.array([1.0, 0.3, 1.0]))
     }
 
     for name, (shift, scale) in scenarios.items():
@@ -142,7 +145,7 @@ def main():
     # Save
     out_file = out_dir / f"results_lambda_{lamb}_shard_{shard}.csv"
     pd.DataFrame(results).to_csv(out_file, index=False)
-    logging.info(f"Shard {shard} completed → {out_file}")
+    logging.info(f"COMPLETED → {out_file}")
 
 if __name__ == "__main__":
     main()
