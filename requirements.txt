@@ -2,3 +2,5 @@ numpy
 pandas
 scikit-learn
 numba
+
+scipy  # 👈 این خط را اضافه کنید
