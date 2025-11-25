@@ -23,21 +23,22 @@ jobs:
         with:
           python-version: "3.12"
 
-      - name: Install req
+      - name: Install Requirements
         run: pip install -r requirements.txt
 
-      - name: Run shard
+      - name: Run Simulation Shard
         run: |
           mkdir -p results
-          N_SIM=$((1000000/20))
+          N_SIM=$((1000000 / 20))
           SEED=$((10000 + ${{matrix.shard}}))
+
           python simulation_engine.py \
             --lambda_value ${{ github.event.inputs.lambda_value }} \
             --n_sim $N_SIM \
             --base_seed $SEED \
             --out results
 
-      - name: Upload shard
+      - name: Upload Shard
         uses: actions/upload-artifact@v4
         with:
           name: shard-${{matrix.shard}}
@@ -57,20 +58,20 @@ jobs:
 
       - run: pip install pandas
 
-      - name: Download all shards
+      - name: Download Shards
         uses: actions/download-artifact@v4
         with:
           pattern: shard-*
           path: all_shards
           merge-multiple: true
 
-      - name: Merge
+      - name: Merge Results
         run: |
           python merge_results.py \
             --input_dir all_shards \
             --output final_report.csv
 
-      - name: Upload final
+      - name: Upload Final Report
         uses: actions/upload-artifact@v4
         with:
           name: final_report
